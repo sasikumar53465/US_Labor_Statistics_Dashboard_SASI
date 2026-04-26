@@ -1,0 +1,34 @@
+{
+  "tests": [
+    {
+      "name": "Test Linear Regression",
+      "setup": "",
+      "run": "python -m unittest tests/testLinearRegression.py",
+      "input": "",
+      "output": "",
+      "comparison": "exact",
+      "timeout": 1,
+      "points": 2
+    },
+    {
+      "name": "Test Logistic Regression",
+      "setup": "",
+      "run": "python -m unittest tests/testLogisticRegression.py",
+      "input": "",
+      "output": "",
+      "comparison": "exact",
+      "timeout": 1,
+      "points": 2
+    },
+    {
+      "name": "Test Adjectives",
+      "setup": "",
+      "run": "python -m unittest tests/testRandomForest.py",
+      "input": "",
+      "output": "",
+      "comparison": "exact",
+      "timeout": 1,
+      "points": 2
+    }
+  ]
+}
