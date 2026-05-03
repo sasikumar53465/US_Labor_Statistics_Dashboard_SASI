@@ -1,0 +1,60 @@
+name: Collect BLS Labor Statistics Data
+
+on:
+  schedule:
+    # Run at 10 AM UTC on the first day of each month
+    - cron: '0 10 1 * *'
+  workflow_dispatch:
+
+jobs:
+  collect-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Collect BLS data
+        env:
+          BLS_API_KEY: ${{ secrets.BLS_API_KEY }}
+        run: python collectData.py
+
+      - name: Check if data changed
+        id: check_changes
+        run: |
+          if git diff --quiet data/USLaborStats.csv; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "No new data detected"
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+            NEW_ROWS=$(wc -l < data/USLaborStats.csv)
+            echo "Data updated with $NEW_ROWS rows"
+          fi
+
+      - name: Commit and push changes
+        if: steps.check_changes.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/USLaborStats.csv
+          git commit -m "Update labor statistics data - $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          git push
+
+      - name: Report success
+        if: steps.check_changes.outputs.changed == 'true'
+        run: echo "Successfully collected and committed new BLS data"
+
+      - name: Report no changes
+        if: steps.check_changes.outputs.changed == 'false'
+        run: echo "No new data available to collect"
