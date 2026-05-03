@@ -117,7 +117,7 @@ logger = logging.getLogger(__name__)
 
 API_URL = 'https://api.bls.gov/publicAPI/v2/timeseries/data/'
 HEADERS = {'Content-type': 'application/json'}
-START_YEAR = int(os.getenv("BLS_START_YEAR", "2007"))
+START_YEAR = int(os.getenv("BLS_START_YEAR", "1976"))
 END_YEAR = datetime.now().year
 APIkey = os.getenv("BLS_API_KEY", "")
 OUTPUT_FILE = "data/USLaborStats.csv"

@@ -28,6 +28,7 @@ jobs:
       - name: Collect BLS data
         env:
           BLS_API_KEY: ${{ secrets.BLS_API_KEY }}
+          BLS_START_YEAR: "1976"
         run: python collectData.py
 
       - name: Check if data changed
