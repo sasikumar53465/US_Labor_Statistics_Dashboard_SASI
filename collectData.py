@@ -13,8 +13,11 @@ import csv
 import pandas as pd
 import logging
 from datetime import datetime
-from dotenv import load_dotenv
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv is only needed for local development
 
 # ---------------DATA series catalog information ------------------
 """
