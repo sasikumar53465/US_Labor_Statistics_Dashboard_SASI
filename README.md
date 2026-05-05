@@ -10,6 +10,8 @@ A Streamlit dashboard that displays US labor statistics data collected automatic
 -  **Data Export**: Download filtered data as CSV
 -  **Real-time Dashboard**: View the latest labor statistics
 
+![Dashboard Preview](assets/dashboard_preview.png)
+
 ## Data Series Included
 
 1. **Total Nonfarm Payrolls** - All employees in thousands (seasonally adjusted)
