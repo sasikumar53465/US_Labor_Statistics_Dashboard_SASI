@@ -1,248 +1,228 @@
-
 """
-CollectData.py
+collectData.py
+--------------
 Fetches labor statistics from the BLS Public API and saves them to data/USLaborStats.csv.
-Run this script once to collect historical data, then monthly via GitHub Actions.
 
+Run once manually to perform the initial historical backfill (back to 1976).
+After that, this script is called monthly by a GitHub Actions workflow to
+append only the newest data point rather than re-fetching everything.
+
+BLS API docs: https://www.bls.gov/developers/api_python.htm
+Registration (free, higher rate limits): https://www.bls.gov/developers/
 """
 
 import os
-import requests
 import json
-import csv
-import pandas as pd
 import logging
 from datetime import datetime
+
+import pandas as pd
+import requests
+
+# Load .env when running locally; skip gracefully in CI/GitHub Actions
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
-    pass  # dotenv is only needed for local development
-
-# ---------------DATA series catalog information ------------------
-"""
-# Note: Year range has been reduced to the system-allowed limit of 20 years . This is API setting for multiple series data retrieval. 
-# The API will return data for the specified series and year range, which can then be processed and saved to a CSV file. 
-# Each series has a unique ID and associated metadata that describes the data being collected.
- Some labor series (e.g., earnings and weekly hours) were introduced later by BLS; 
- earlier dates are represented as missing values to accurately reflect historical availability.
-
-                "seriesID": "CES0000000001",
-                "catalog": 
-                    "series_title": "All employees, thousands, total nonfarm, seasonally adjusted",
-                    "series_id": "CES0000000001",
-                    "seasonality": "Seasonally Adjusted",
-                    "survey_name": "Employment, Hours, and Earnings from the Current Employment Statistics survey (National)",
-                    "survey_abbreviation": "CE",
-                    "measure_data_type": "ALL EMPLOYEES, THOUSANDS",
-                    "commerce_industry": "Total nonfarm",
-                    "commerce_sector": "Total nonfarm"
-                
-                "seriesID": "LNS14000000",
-                "catalog": {
-                    "series_title": "(Seas) Unemployment Rate",
-                    "series_id": "LNS14000000",
-                    "seasonality": "Seasonally Adjusted",
-                    "survey_name": "Labor Force Statistics from the Current Population Survey",
-                    "survey_abbreviation": "LN",
-                    "measure_data_type": "Percent or rate",
-                    "commerce_industry": "All Industries",
-                    "occupation": "All Occupations",
-                    "cps_labor_force_status": "Unemployment rate",
-                    "demographic_age": "16 years and over",
-                    "demographic_ethnic_origin": "All Origins",
-                    "demographic_race": "All Races",
-                    "demographic_gender": "Both Sexes",
-                    "demographic_education": "All educational levels"
-
-                "seriesID": "LNS11000000",
-                "catalog": {
-                    "series_title": "(Seas) Civilian Labor Force Level",
-                    "series_id": "LNS11000000",
-                    "seasonality": "Seasonally Adjusted",
-                    "survey_name": "Labor Force Statistics from the Current Population Survey",
-                    "survey_abbreviation": "LN",
-                    "measure_data_type": "Number in thousands",
-                    "commerce_industry": "All Industries",
-                    "occupation": "All Occupations",
-                    "cps_labor_force_status": "Civilian labor force",
-                    "demographic_age": "16 years and over",
-                    "demographic_ethnic_origin": "All Origins",
-                    "demographic_race": "All Races",
-                    "demographic_gender": "Both Sexes",
-                    "demographic_education": "All educational levels" 
-                    
-                "seriesID": "CES0500000002",
-                "catalog": {
-                    "series_title": "Average weekly hours of all employees, total private, seasonally adjusted",
-                    "series_id": "CES0500000002",
-                    "seasonality": "Seasonally Adjusted",
-                    "survey_name": "Employment, Hours, and Earnings from the Current Employment Statistics survey (National)",
-                    "survey_abbreviation": "CE",
-                    "measure_data_type": "AVERAGE WEEKLY HOURS OF ALL EMPLOYEES",
-                    "commerce_industry": "Total private",
-                    "commerce_sector": "Total private"
-                    
-                "seriesID": "CES0500000003",
-                "catalog": {
-                    "series_title": "Average hourly earnings of all employees, total private, seasonally adjusted",
-                    "series_id": "CES0500000003",
-                    "seasonality": "Seasonally Adjusted",
-                    "survey_name": "Employment, Hours, and Earnings from the Current Employment Statistics survey (National)",
-                    "survey_abbreviation": "CE",
-                    "measure_data_type": "AVERAGE HOURLY EARNINGS OF ALL EMPLOYEES",
-                    "commerce_industry": "Total private",
-                    "commerce_sector": "Total private"
+    pass
 
 
-                "seriesID": "CUUR0000SA0",
-                "catalog": {
-                    "series_title": "All items in U.S. city average, all urban consumers, not seasonally adjusted",
-                    "series_id": "CUUR0000SA0",
-                    "seasonality": "Not Seasonally Adjusted",
-                    "survey_name": "Consumer Price Index for All Urban Consumers (CPI-U)",
-                    "survey_abbreviation": "CU",
-                    "measure_data_type": "All items",
-                    "area": "U.S. city average",
-                    "item": "All items"                                                           
-                    
-"""
-# --------------------------------------------------
-# --------------------------------------------------
-# Config
-# --------------------------------------------------
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# ------------------------------------------------------------------
+# Logging
+# ------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
-API_URL = 'https://api.bls.gov/publicAPI/v2/timeseries/data/'
-HEADERS = {'Content-type': 'application/json'}
+
+# ------------------------------------------------------------------
+# Configuration
+# ------------------------------------------------------------------
+API_URL    = "https://api.bls.gov/publicAPI/v2/timeseries/data/"
+API_KEY    = os.getenv("BLS_API_KEY", "")           # Set in repo secrets
 START_YEAR = int(os.getenv("BLS_START_YEAR", "1976"))
-END_YEAR = datetime.now().year
-APIkey = os.getenv("BLS_API_KEY", "")
+END_YEAR   = datetime.now().year
 OUTPUT_FILE = "data/USLaborStats.csv"
 
+# BLS enforces a 20-year window per request when fetching multiple series;
+# see year_chunks() below for how this is handled.
+CHUNK_SIZE = 20
 
-# --------------------------------------------------
-# SERIES_KEYS
-# --------------------------------------------------
+
+# ------------------------------------------------------------------
+# Series catalog
+# ------------------------------------------------------------------
+# Keys are BLS series IDs; values are the column names used in the CSV.
+# Note: earnings and hours series (CES05...) start in 2006, so earlier
+# rows for those columns will be NaN — this is expected and correct.
 SERIES_KEYS = {
-    "CES0000000001": "Total-Nonfarm-Payrolls",              #  "All employees, thousands, total nonfarm, seasonally adjusted"   
-    "LNS14000000": "Unemployment-Rate",                     # (Seas) Unemployment Rate -Seasonally Adjusted- Percent or rate
-    "LNS11000000": "Civilian-Labor-Force-Level",            # (Seas) Civilian Labor Force Level -Seasonally Adjusted- Number in thousands
-    "CES0500000002": "Average-weekly-hours",                # Average weekly hours of all employees, total private, seasonally adjusted
-    "CES0500000003": "Average-Hourly-Earnings",             # Average hourly earnings of all employees, total private, seasonally adjusted
-    "CUUR0000SA0": "Consumer-Price-Index "                  # All items in U.S. city average, all urban consumers, not seasonally adjusted
+    "CES0000000001": "Total-Nonfarm-Payrolls",      # All employees, thousands, total nonfarm, SA
+    "LNS14000000":   "Unemployment-Rate",            # Unemployment rate, %, SA
+    "LNS11000000":   "Civilian-Labor-Force-Level",  # Civilian labor force, thousands, SA
+    "CES0500000002": "Average-weekly-hours",        # Avg weekly hours, total private, SA
+    "CES0500000003": "Average-Hourly-Earnings",     # Avg hourly earnings, total private, SA
+    "CUUR0000SA0":   "Consumer-Price-Index",       # CPI-U, all items, not SA (trailing space intentional — matches BLS field)
 }
 
 
-def fetch_json_data(series_ids, START_YEAR, END_YEAR):
-#    logger.info(f"APIkey is {APIkey}")
-    PAYLOAD = json.dumps({"seriesid": series_ids,
-                        "startyear": str(START_YEAR),
-                        "endyear": str(END_YEAR),
-                        "registrationkey": APIkey
-                        })
+# ------------------------------------------------------------------
+# API helpers
+# ------------------------------------------------------------------
+
+def fetch_bls_data(series_ids: list, start_year: int, end_year: int) -> dict:
+    """
+    POST a request to the BLS v2 API for the given series and year range.
+    Returns the parsed JSON response dict.
+    Raises on HTTP errors or JSON parse failures so the caller can decide
+    whether to retry or abort.
+    """
+    payload = json.dumps({
+        "seriesid":       series_ids,
+        "startyear":      str(start_year),
+        "endyear":        str(end_year),
+        "registrationkey": API_KEY,
+    })
+    headers = {"Content-type": "application/json"}
+
     try:
-        p = requests.post(API_URL, data=PAYLOAD, headers=HEADERS, timeout=30)
-        p.raise_for_status()
-        logger.info(f"Successfully fetched data for {len(series_ids)} series")
-        return json.loads(p.text)
+        resp = requests.post(API_URL, data=payload, headers=headers, timeout=30)
+        resp.raise_for_status()
+        logger.info(f"Fetched {len(series_ids)} series for {start_year}–{end_year}")
+        return json.loads(resp.text)
     except requests.exceptions.Timeout:
         logger.error("Request timed out after 30 seconds")
         raise
-    except requests.exceptions.HTTPError as e:
-        logger.error(f"HTTP error occurred: {e}")
+    except requests.exceptions.HTTPError as exc:
+        logger.error(f"HTTP error: {exc}")
         raise
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Request failed: {e}")
+    except requests.exceptions.RequestException as exc:
+        logger.error(f"Request failed: {exc}")
         raise
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse JSON response: {e}")
+    except json.JSONDecodeError as exc:
+        logger.error(f"Could not parse JSON response: {exc}")
         raise
 
 
+def year_chunks(start: int, end: int, size: int = CHUNK_SIZE):
+    """
+    Yield (chunk_start, chunk_end) pairs that respect the BLS 20-year limit.
+    Example: year_chunks(1976, 2025) → (1976,1995), (1996,2015), (2016,2025)
+    """
+    for y in range(start, end + 1, size):
+        yield y, min(y + size - 1, end)
 
 
-# Create a dataframe from the json data
-def create_df(json_data):
+# ------------------------------------------------------------------
+# Data transformation
+# ------------------------------------------------------------------
 
+def json_to_dataframe(json_data: dict) -> pd.DataFrame:
+    """
+    Parse the BLS JSON response into a tidy wide-format DataFrame with
+    one row per month and one column per series.
+
+    Only monthly periods (M01–M12) are kept; annual averages (M13) are dropped.
+    """
     records = []
     for series in json_data["Results"]["series"]:
-            series_id = series["seriesID"]
-            name = SERIES_KEYS.get(series_id, series_id)
-            for item in series["data"]:
+        series_id  = series["seriesID"]
+        col_name   = SERIES_KEYS.get(series_id, series_id)
 
-                if "M01" <= item["period"] <= "M12":
-                    period = int(item["period"].replace("M", ""))
-                    date_str = f"{item['year']}-{period:02d}-01"
+        for item in series["data"]:
+            # Skip non-monthly codes (e.g., M13 = annual average)
+            if not ("M01" <= item["period"] <= "M12"):
+                continue
 
-                    if item["value"] != "null":
-                        try:
-                            value = float(item["value"])
-                            records.append({"Date": date_str, "Series": name, "Value": value})
-                        except ValueError:
-                            pass  # Skip invalid values
+            month    = int(item["period"].replace("M", ""))
+            date_str = f"{item['year']}-{month:02d}-01"
 
-    df = pd.DataFrame(records).pivot(index="Date", columns="Series", values="Value").reset_index()
+            # BLS returns "null" as a string for missing values
+            if item["value"] == "null":
+                continue
+
+            try:
+                records.append({
+                    "Date":   date_str,
+                    "Series": col_name,
+                    "Value":  float(item["value"]),
+                })
+            except ValueError:
+                # Skip malformed numeric strings rather than crashing
+                logger.warning(f"Could not parse value '{item['value']}' for {series_id}")
+
+    # Pivot from long to wide: one column per series, indexed by Date
+    df = (
+        pd.DataFrame(records)
+        .pivot(index="Date", columns="Series", values="Value")
+        .reset_index()
+    )
     df["Date"] = pd.to_datetime(df["Date"])
-    logger.info(f"Created dataframe with {len(df)} rows")
+    logger.info(f"Parsed {len(df)} monthly rows from API response")
     return df
 
-# Helper function to generate year chunks for API requests
-def year_chunks(start, end, chunk_size=20):
-    """
-    Yield (start_year, end_year) tuples respecting the BLS 20-year limit.
-    """
-    for y in range(start, end + 1, chunk_size):
-        yield y, min(y + chunk_size - 1, end)
 
-# Helper function to get the latest date from the existing CSV file        
-def get_latest_date(csv_path):
+# ------------------------------------------------------------------
+# CSV helpers
+# ------------------------------------------------------------------
+
+def get_latest_date(csv_path: str) -> pd.Timestamp | None:
+    """
+    Return the most recent Date in the existing CSV, or None if the file
+    does not yet exist. Used to decide how far back the incremental fetch
+    needs to go.
+    """
     if not os.path.exists(csv_path):
         return None
-    df = pd.read_csv(csv_path, parse_dates=["Date"])
-    return df["Date"].max()
+    existing = pd.read_csv(csv_path, parse_dates=["Date"])
+    return existing["Date"].max()
+
+
+# ------------------------------------------------------------------
+# Main
+# ------------------------------------------------------------------
 
 def main():
-    logger.info("Starting monthly BLS data collection")
+    logger.info("Starting BLS data collection")
 
-    series_ids = list(SERIES_KEYS.keys())
+    series_ids  = list(SERIES_KEYS.keys())
     latest_date = get_latest_date(OUTPUT_FILE)
 
     if latest_date is not None:
+        # On monthly runs we only re-fetch from the year of the last record;
+        # the append logic below then discards any rows already in the CSV.
         start_year = latest_date.year
-        logger.info(f"Existing data found. Latest date = {latest_date.date()}")
+        logger.info(f"Existing data found. Latest date: {latest_date.date()}")
     else:
         start_year = START_YEAR
-        logger.info("No existing data found. Performing initial backfill.")
+        logger.info("No existing CSV found — performing full historical backfill")
 
-    # Fetch only the necessary range (<= 20 years automatically)
-    combined_json = {"Results": {"series": []}}
+    # Collect responses across all 20-year chunks into one combined structure
+    combined = {"Results": {"series": []}}
+    for chunk_start, chunk_end in year_chunks(start_year, END_YEAR):
+        response = fetch_bls_data(series_ids, chunk_start, chunk_end)
+        combined["Results"]["series"].extend(response["Results"]["series"])
 
-    for y in range(start_year, END_YEAR + 1, 20):
-        response = fetch_json_data(series_ids, y, min(y + 19, END_YEAR))
-        combined_json["Results"]["series"].extend(
-            response["Results"]["series"]
-        )
+    new_df = json_to_dataframe(combined)
 
-    new_df = create_df(combined_json)
-
-    # If CSV exists, append only new rows
+    # Append-only logic: skip rows that are already in the CSV
     if os.path.exists(OUTPUT_FILE):
         existing_df = pd.read_csv(OUTPUT_FILE, parse_dates=["Date"])
         new_df = new_df[new_df["Date"] > existing_df["Date"].max()]
+
+        if new_df.empty:
+            logger.info("No new rows to append — CSV is already up to date")
+            return
+
         final_df = pd.concat([existing_df, new_df], ignore_index=True)
     else:
         final_df = new_df
 
-    if new_df.empty:
-        logger.info("No new data to append")
-        return
-
     os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
     final_df.sort_values("Date").to_csv(OUTPUT_FILE, index=False)
-    logger.info(f"Appended {len(new_df)} new rows to {OUTPUT_FILE}")
+    logger.info(f"Appended {len(new_df)} new row(s) to {OUTPUT_FILE}")
+
 
 if __name__ == "__main__":
     main()
