@@ -1,6 +1,7 @@
 # US Labor Statistics Dashboard
 
 A Streamlit dashboard that displays US labor statistics data collected automatically from the Bureau of Labor Statistics (BLS) API. New data is collected monthly via GitHub Actions.
+https://uslaborstatisticsdashboardsasi-d7gmw7qxupihjmcfywjsj2.streamlit.app/
 
 ## Features
 
