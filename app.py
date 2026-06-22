@@ -62,9 +62,10 @@ months = list(range(1, 13))
 start_year = st.sidebar.selectbox("Start Year", years, index=0)
 start_month = st.sidebar.selectbox("Start Month", months, index=0, format_func=lambda x: f"{x:02d}")
 
-# End date selectors
+# End date selectors  
 end_year = st.sidebar.selectbox("End Year", years, index=len(years)-1)
-end_month = st.sidebar.selectbox("End Month", months, index=11, format_func=lambda x: f"{x:02d}")
+latest_month = df["Date"].max().month
+end_month = st.sidebar.selectbox("End Month", months, index=latest_month-1, format_func=lambda x: f"{x:02d}")
 
 # Create date objects
 start_date = date(int(start_year), int(start_month), 1)
